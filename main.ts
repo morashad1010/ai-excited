@@ -1,53 +1,76 @@
-// Submission helper for make.fun's ai-excited-01 competition.
-// Copies entry.png into the competition output directory and validates the copy.
-
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, open, readFile, stat } from 'node:fs/promises';
-import path from 'node:path';
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MAX_BYTES = 1_048_576;
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
+const SIZE_CAP = 1024 * 1024;
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const source = fileURLToPath(new URL('./entry.png', import.meta.url));
-const destination = path.join(outDir, 'entry.png');
+const sourcePath = fileURLToPath(new URL('entry.png', import.meta.url));
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+const targetPath = join(outputDir, 'entry.png');
 
-await mkdir(outDir, { recursive: true });
-await copyFile(source, destination);
-
-const info = await stat(destination);
-if (!info.isFile()) {
-  throw new Error(`${destination} is not a regular file`);
+/**
+ * Reads the leading bytes of a file without pulling the whole thing into memory.
+ */
+function readHead(file: string, length: number): Buffer {
+  const fd = openSync(file, 'r');
+  const head = Buffer.alloc(length);
+  try {
+    const got = readSync(fd, head, 0, length, 0);
+    if (got < length) {
+      throw new Error(
+        `copied file ${file} is truncated: only ${got} of ${length} signature bytes are readable`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return head;
 }
 
-if (info.size > MAX_BYTES) {
-  throw new Error(
-    `${destination} is ${info.size} bytes, over the ${MAX_BYTES} byte limit`,
-  );
-}
+/**
+ * Confirms that the copy on disk is a PNG-shaped regular file within the size cap,
+ * and returns its byte length. Any defect throws with a description of the defect.
+ */
+function assertValidCopy(file: string): number {
+  if (!existsSync(file)) {
+    throw new Error(`no file was written at ${file}`);
+  }
 
-const handle = await open(destination, 'r');
-let header: Buffer;
-try {
-  header = Buffer.alloc(PNG_SIGNATURE.length);
-  const { bytesRead } = await handle.read(header, 0, header.length, 0);
-  if (bytesRead !== header.length) {
+  const stats = statSync(file);
+  if (!stats.isFile()) {
+    throw new Error(`path ${file} is not a regular file`);
+  }
+  if (stats.size > SIZE_CAP) {
     throw new Error(
-      `${destination} is only ${bytesRead} bytes, too short to be a PNG`,
+      `file ${file} is ${stats.size} bytes, which exceeds the ${SIZE_CAP} byte ceiling`,
     );
   }
-} finally {
-  await handle.close();
+
+  const head = readHead(file, PNG_SIGNATURE.length);
+  if (!head.equals(PNG_SIGNATURE)) {
+    throw new Error(
+      `file ${file} lacks the PNG signature 89 50 4e 47 0d 0a 1a 0a; found ${head.toString('hex')}`,
+    );
+  }
+
+  return stats.size;
 }
 
-if (!header.equals(PNG_SIGNATURE)) {
-  throw new Error(
-    `${destination} does not start with the PNG signature ` +
-      `(89 50 4E 47 0D 0A 1A 0A), got ${header.toString('hex').match(/../g)?.join(' ')}`,
-  );
-}
+mkdirSync(outputDir, { recursive: true });
+copyFileSync(sourcePath, targetPath);
 
-const digest = createHash('sha256').update(await readFile(destination)).digest('hex');
+const bytes = assertValidCopy(targetPath);
+const digest = createHash('sha256').update(readFileSync(targetPath)).digest('hex');
 
-console.log(`${destination} ${info.size} bytes sha256:${digest}`);
+console.log(`${targetPath} | ${bytes} bytes | sha256 ${digest}`);
