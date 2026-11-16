@@ -1,2 +1,8 @@
+# build output from `node main.ts`
 out/
+
+# dependencies, if any are ever added
 node_modules/
+
+# macOS Finder droppings
+.DS_Store
